@@ -108,3 +108,25 @@ func TestHalfOpenRecoveryAfterCooldown(t *testing.T) {
     if one() != 200 { t.Fatal("half-open healthy probe did not close circuit") }
     if one() != 200 { t.Fatal("closed circuit did not serve request") }
 }
+
+func TestOptionalGlobalRateLimit(t *testing.T) {
+    backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(200)
+    }))
+    defer backend.Close()
+    gate, err := New([]string{backend.URL}, 4, time.Second)
+    if err != nil { t.Fatal(err) }
+    if err := gate.SetGlobalRateLimit(1, 2); err != nil { t.Fatal(err) }
+    for i := 0; i < 3; i++ {
+        rec := httptest.NewRecorder()
+        gate.ServeHTTP(rec, httptest.NewRequest("POST", "/infer", nil))
+        want := 200
+        if i == 2 { want = 429 }
+        if rec.Code != want { t.Fatalf("request %d: got %d want %d", i, rec.Code, want) }
+    }
+    if gate.rateLimitRejected.Load() != 1 { t.Fatal("missing rate-limit rejection counter") }
+    rec := httptest.NewRecorder()
+    gate.ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+    if rec.Code != 200 { t.Fatal("rate limit should not block health") }
+    if err := gate.SetGlobalRateLimit(0, 1); err == nil { t.Fatal("expected invalid RPS") }
+}

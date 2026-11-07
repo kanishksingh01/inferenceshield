@@ -70,6 +70,9 @@ type Gateway struct {
     retryBudgetDenied atomic.Uint64
     streamsStarted atomic.Uint64
     streamFailures atomic.Uint64
+    rateLimiterMu sync.RWMutex
+    rateLimiter *tokenBucket
+    rateLimitRejected atomic.Uint64
 }
 
 func New(targets []string, maxInFlight int, timeout time.Duration) (*Gateway, error) {
@@ -196,6 +199,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             {"inferenceshield_retry_budget_denied_total", g.retryBudgetDenied.Load()},
             {"inferenceshield_stream_requests_total", g.streamsStarted.Load()},
             {"inferenceshield_stream_failures_total", g.streamFailures.Load()},
+            {"inferenceshield_rate_limit_rejections_total", g.rateLimitRejected.Load()},
         }
         for _, metric := range values {
             _, _ = fmt.Fprintf(w, "# TYPE %s counter\n%s %d\n", metric.name, metric.name, metric.val)
@@ -212,6 +216,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             "retry_budget_denied": g.retryBudgetDenied.Load(),
             "stream_requests": g.streamsStarted.Load(),
             "stream_failures": g.streamFailures.Load(),
+            "rate_limit_rejections": g.rateLimitRejected.Load(),
         })
         return
     }
@@ -221,6 +226,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     }
     if r.Method != http.MethodPost {
         http.Error(w, "POST required", http.StatusMethodNotAllowed)
+        return
+    }
+    if !g.allowRate(time.Now()) {
+        g.rateLimitRejected.Add(1)
+        w.Header().Set("Retry-After", "1")
+        http.Error(w, "global gateway rate limit exceeded", http.StatusTooManyRequests)
         return
     }
     select {
