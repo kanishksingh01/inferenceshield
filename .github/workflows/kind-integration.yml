@@ -45,6 +45,19 @@ jobs:
           for component in healthy failing gateway; do
             kubectl --context kind-inferenceshield -n inferenceshield-lab rollout status deployment/$component --timeout=180s
           done
+      - name: Wait for real backend connectivity from inside gateway Pod
+        run: |
+          kubectl --context kind-inferenceshield -n kube-system rollout status deployment/coredns --timeout=180s
+          for attempt in $(seq 1 40); do
+            if kubectl --context kind-inferenceshield -n inferenceshield-lab exec deployment/gateway -- \
+              wget -q -O /dev/null --post-data='{}' http://healthy.inferenceshield-lab.svc.cluster.local:8081/infer; then
+              echo "Backend reachable over real Kubernetes DNS and Service"
+              break
+            fi
+            if test "$attempt" -eq 40; then echo "Backend unavailable after 40 probes"; exit 1; fi
+            sleep 2
+          done
+          kubectl --context kind-inferenceshield -n inferenceshield-lab get endpointslices -o wide
       - name: Verify live gateway circuit and SSE over Kubernetes Service
         run: |
           kubectl --context kind-inferenceshield -n inferenceshield-lab port-forward svc/gateway 18080:8080 >/tmp/gateway-forward.log 2>&1 &
