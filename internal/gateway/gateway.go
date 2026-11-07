@@ -4,6 +4,7 @@ import (
     "bytes"
     "context"
     "encoding/json"
+    "fmt"
     "io"
     "net/http"
     "net/url"
@@ -176,6 +177,24 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     if r.URL.Path == "/health" {
         w.WriteHeader(http.StatusOK)
         _, _ = w.Write([]byte("ok"))
+        return
+    }
+    if r.URL.Path == "/prometheus" {
+        w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        values := []struct {
+            name string
+            val uint64
+        }{
+            {"inferenceshield_requests_accepted_total", g.accepted.Load()},
+            {"inferenceshield_admission_rejected_total", g.rejected.Load()},
+            {"inferenceshield_upstream_failures_total", g.downstreamFailures.Load()},
+            {"inferenceshield_circuit_rejections_total", g.circuitOpenRejections.Load()},
+            {"inferenceshield_retry_attempts_total", g.retryAttempts.Load()},
+            {"inferenceshield_retry_budget_denied_total", g.retryBudgetDenied.Load()},
+        }
+        for _, metric := range values {
+            _, _ = fmt.Fprintf(w, "# TYPE %s counter\\n%s %d\\n", metric.name, metric.name, metric.val)
+        }
         return
     }
     if r.URL.Path == "/metrics" {
