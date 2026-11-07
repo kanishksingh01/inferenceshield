@@ -15,19 +15,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Start isolated gateway and fault backends
-        run: docker compose up -d --build
+        run: docker compose --profile stress up -d --build
       - name: Verify circuit breaker against live synthetic backend
-        run: python3 scripts/compose_smoke.py
+        run: |
+          python3 scripts/compose_smoke.py
+          python3 scripts/stress_smoke.py
       - name: Save report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: inferenceshield-compose-report
-          path: compose-report.json
+          path: |
+            compose-report.json
+            stress-report.json
           if-no-files-found: ignore
           retention-days: 14
       - name: Diagnose and clean up
         if: always()
         run: |
-          docker compose logs --tail=80 || true
-          docker compose down --volumes --remove-orphans
+          docker compose --profile stress logs --tail=80 || true
+          docker compose --profile stress down --volumes --remove-orphans

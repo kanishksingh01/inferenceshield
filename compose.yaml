@@ -22,3 +22,22 @@ services:
     depends_on:
       - healthy
       - failing
+
+  slow:
+    profiles: ["stress"]
+    build:
+      context: .
+      target: mock
+    environment:
+      MOCK_MODE: slow
+  slow-gateway:
+    profiles: ["stress"]
+    build:
+      context: .
+      target: gateway
+    environment:
+      UPSTREAM_URLS: http://slow:8081
+    ports:
+      - "127.0.0.1:8082:8080"
+    depends_on:
+      - slow
