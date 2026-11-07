@@ -47,6 +47,16 @@ def main():
         raise AssertionError(f"downstream failure count mismatch: {metrics}")
     if metrics["retry_attempts"] != 0:
         raise AssertionError("automatic retries should be disabled by default")
+    stream_request = Request(ROOT + "/infer", data=b'{"prompt":"synthetic-stream"}',
+                             headers={"Accept": "text/event-stream"},
+                             method="POST")
+    with urlopen(stream_request, timeout=4) as stream:
+        content_type = stream.headers.get("Content-Type", "")
+        chunks = stream.read()
+        if stream.status != 200 or "text/event-stream" not in content_type:
+            raise AssertionError("healthy backend did not produce SSE")
+        if chunks.count(b"data:") != 3 or chunks.count(b"\\n\\n") != 3:
+            raise AssertionError(f"invalid SSE events: {chunks!r}")
     report = {
         "scenario": "one healthy and one HTTP-503 mock inference backend",
         "requests": len(codes),
@@ -56,6 +66,7 @@ def main():
         "all_late_requests_successful": True,
         "real_backend_calls": True,
         "model_api_requests": False,
+        "sse_events_received": 3,
     }
     print(json.dumps(report, indent=2))
     with open("compose-report.json", "w", encoding="utf-8") as fp:
