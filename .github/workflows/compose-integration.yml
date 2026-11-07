@@ -1,0 +1,33 @@
+name: Compose Gateway Integration
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: inferenceshield-compose-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  synthetic-backend-failure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start isolated gateway and fault backends
+        run: docker compose up -d --build
+      - name: Verify circuit breaker against live synthetic backend
+        run: python3 scripts/compose_smoke.py
+      - name: Save report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inferenceshield-compose-report
+          path: compose-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Diagnose and clean up
+        if: always()
+        run: |
+          docker compose logs --tail=80 || true
+          docker compose down --volumes --remove-orphans
