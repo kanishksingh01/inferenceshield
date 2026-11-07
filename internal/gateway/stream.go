@@ -43,6 +43,10 @@ func (g *Gateway) serveEventStream(w http.ResponseWriter, r *http.Request, body 
     req.Header.Set("Accept", "text/event-stream")
     resp, err := g.client.Do(req)
     if err != nil {
+        if r.Context().Err() != nil {
+            backend.releaseProbe()
+            return // client disconnect is not an upstream failure
+        }
         g.downstreamFailures.Add(1)
         g.streamFailures.Add(1)
         backend.finish(false, g.threshold, g.cooldown)
@@ -82,8 +86,8 @@ func (g *Gateway) serveEventStream(w http.ResponseWriter, r *http.Request, body 
             remaining -= int64(n)
             flusher.Flush()
             if writeErr != nil || wrote != n {
-                g.streamFailures.Add(1)
-                backend.finish(false, g.threshold, g.cooldown)
+                // A failed downstream write is not proof the upstream is unhealthy.
+                backend.releaseProbe()
                 return
             }
         }
@@ -92,6 +96,10 @@ func (g *Gateway) serveEventStream(w http.ResponseWriter, r *http.Request, body 
             return
         }
         if readErr != nil {
+            if r.Context().Err() != nil {
+                backend.releaseProbe()
+                return
+            }
             g.streamFailures.Add(1)
             g.downstreamFailures.Add(1)
             backend.finish(false, g.threshold, g.cooldown)

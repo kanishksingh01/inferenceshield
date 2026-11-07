@@ -52,6 +52,14 @@ func (b *backendState) finish(success bool, limit int, cooldown time.Duration) {
     b.probing = false
 }
 
+// releaseProbe clears an in-flight half-open reservation without declaring
+// upstream success or failure (for example when the caller disconnects).
+func (b *backendState) releaseProbe() {
+    b.mu.Lock()
+    b.probing = false
+    b.mu.Unlock()
+}
+
 type Gateway struct {
     backends []*backendState
     client *http.Client
@@ -145,7 +153,7 @@ type attemptResult struct {
     retryable bool
 }
 
-func (g *Gateway) attempt(ctx context.Context, backend *backendState, body []byte, contentType string, idempotencyKey string) attemptResult {
+func (g *Gateway) attempt(ctx context.Context, callerCtx context.Context, backend *backendState, body []byte, contentType string, idempotencyKey string) attemptResult {
     target := *backend.url
     target.Path = "/infer"
     target.RawQuery = ""
@@ -159,12 +167,20 @@ func (g *Gateway) attempt(ctx context.Context, backend *backendState, body []byt
     if idempotencyKey != "" { req.Header.Set("Idempotency-Key", idempotencyKey) }
     resp, err := g.client.Do(req)
     if err != nil {
+        if callerCtx.Err() != nil {
+            backend.releaseProbe()
+            return attemptResult{status: 502, body: []byte("client cancelled"), retryable: false}
+        }
         backend.finish(false, g.threshold, g.cooldown)
         g.downstreamFailures.Add(1)
         return attemptResult{status: 502, body: []byte("upstream request failed"), retryable: true}
     }
     defer resp.Body.Close()
     data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+    if readErr != nil && callerCtx.Err() != nil {
+        backend.releaseProbe()
+        return attemptResult{status: 502, body: []byte("client cancelled"), retryable: false}
+    }
     if readErr != nil || len(data) > maxBodyBytes {
         backend.finish(false, g.threshold, g.cooldown)
         g.downstreamFailures.Add(1)
@@ -262,7 +278,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     }
     key := r.Header.Get("Idempotency-Key")
     canRetry := g.maxRetries > 0 && len(key) > 0 && len(key) <= 128 && len(g.backends) > 1
-    result := g.attempt(ctx, backend, body, r.Header.Get("Content-Type"), key)
+    result := g.attempt(ctx, r.Context(), backend, body, r.Header.Get("Content-Type"), key)
     for i := 0; canRetry && i < g.maxRetries && result.retryable && ctx.Err() == nil; i++ {
         next := g.selectBackendExcept(backend)
         if next == nil { break }
@@ -275,7 +291,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             break
         }
         backend = next
-        result = g.attempt(ctx, backend, body, r.Header.Get("Content-Type"), key)
+        result = g.attempt(ctx, r.Context(), backend, body, r.Header.Get("Content-Type"), key)
     }
     if result.contentType != "" { w.Header().Set("Content-Type", result.contentType) }
     w.WriteHeader(result.status)
