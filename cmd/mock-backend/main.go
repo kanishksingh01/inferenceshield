@@ -23,7 +23,7 @@ func main() {
             flusher, ok := w.(http.Flusher)
             if !ok { http.Error(w, "streaming unavailable", 500); return }
             for i := 0; i < 3; i++ {
-                _, _ = fmt.Fprintf(w, "data: {\"token\":%d}\\n\\n", i)
+                _, _ = fmt.Fprintf(w, "data: {\"token\":%d}\n\n", i)
                 flusher.Flush()
                 time.Sleep(20 * time.Millisecond)
             }
