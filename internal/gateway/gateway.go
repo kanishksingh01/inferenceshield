@@ -1,6 +1,8 @@
 package gateway
 
 import (
+    "bytes"
+    "context"
     "encoding/json"
     "io"
     "net/http"
@@ -10,6 +12,8 @@ import (
     "sync/atomic"
     "time"
 )
+
+const maxBodyBytes = 1 << 20
 
 type backendState struct {
     url *url.URL
@@ -53,11 +57,16 @@ type Gateway struct {
     permits chan struct{}
     threshold int
     cooldown time.Duration
+    timeout time.Duration
+    maxRetries int
+    budgetEvery uint64
     next atomic.Uint64
     accepted atomic.Uint64
     rejected atomic.Uint64
     downstreamFailures atomic.Uint64
     circuitOpenRejections atomic.Uint64
+    retryAttempts atomic.Uint64
+    retryBudgetDenied atomic.Uint64
 }
 
 func New(targets []string, maxInFlight int, timeout time.Duration) (*Gateway, error) {
@@ -65,13 +74,22 @@ func New(targets []string, maxInFlight int, timeout time.Duration) (*Gateway, er
 }
 
 func NewWithCircuitPolicy(targets []string, maxInFlight int, timeout time.Duration,
-                          failureThreshold int, cooldown time.Duration) (*Gateway, error) {
+    failureThreshold int, cooldown time.Duration) (*Gateway, error) {
+    return NewWithPolicies(targets, maxInFlight, timeout, failureThreshold, cooldown, 0, 5)
+}
+
+// Retries are OFF unless configured. POST replay additionally requires a bounded
+// Idempotency-Key header. This is a lab API; downstream idempotency remains the
+// responsibility of the backend, not something a header alone guarantees.
+func NewWithPolicies(targets []string, maxInFlight int, timeout time.Duration,
+    failureThreshold int, cooldown time.Duration, maxRetries int, budgetEvery uint64) (*Gateway, error) {
     if maxInFlight < 1 || timeout <= 0 || len(targets) == 0 ||
-        failureThreshold < 1 || cooldown <= 0 {
-        return nil, &ConfigError{"invalid backends, capacity, timeout or circuit policy"}
+        failureThreshold < 1 || cooldown <= 0 || maxRetries < 0 || maxRetries > 2 || budgetEvery < 1 {
+        return nil, &ConfigError{"invalid backends, capacity, timeout or retry/circuit policy"}
     }
-    gateway := &Gateway{permits: make(chan struct{}, maxInFlight),
-        threshold: failureThreshold, cooldown: cooldown,
+    g := &Gateway{permits: make(chan struct{}, maxInFlight),
+        threshold: failureThreshold, cooldown: cooldown, timeout: timeout,
+        maxRetries: maxRetries, budgetEvery: budgetEvery,
         client: &http.Client{Timeout: timeout,
             CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
                 return http.ErrUseLastResponse
@@ -82,24 +100,76 @@ func NewWithCircuitPolicy(targets []string, maxInFlight int, timeout time.Durati
             (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
             return nil, &ConfigError{"invalid backend URL"}
         }
-        gateway.backends = append(gateway.backends, &backendState{url: u})
+        g.backends = append(g.backends, &backendState{url: u})
     }
-    return gateway, nil
+    return g, nil
 }
 
-type ConfigError struct { Message string }
+type ConfigError struct{ Message string }
 func (e *ConfigError) Error() string { return e.Message }
 
-func (g *Gateway) selectBackend() *backendState {
-    start := g.next.Add(1)-1
+func (g *Gateway) selectBackendExcept(previous *backendState) *backendState {
+    start := g.next.Add(1) - 1
     for offset := 0; offset < len(g.backends); offset++ {
-        index := (start + uint64(offset)) % uint64(len(g.backends))
-        candidate := g.backends[index]
-        if candidate.eligible(time.Now()) {
+        candidate := g.backends[(start+uint64(offset))%uint64(len(g.backends))]
+        if candidate != previous && candidate.eligible(time.Now()) {
             return candidate
         }
     }
     return nil
+}
+
+// A global concurrency-safe budget: at most one retry per budgetEvery accepted
+// primary requests, in addition to the per-request maxRetries bound.
+func (g *Gateway) acquireRetryToken() bool {
+    for {
+        used := g.retryAttempts.Load()
+        if used >= g.accepted.Load()/g.budgetEvery {
+            g.retryBudgetDenied.Add(1)
+            return false
+        }
+        if g.retryAttempts.CompareAndSwap(used, used+1) { return true }
+    }
+}
+
+type attemptResult struct {
+    status int
+    body []byte
+    contentType string
+    retryable bool
+}
+
+func (g *Gateway) attempt(ctx context.Context, backend *backendState, body []byte, contentType string) attemptResult {
+    target := *backend.url
+    target.Path = "/infer"
+    target.RawQuery = ""
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+    if err != nil {
+        backend.finish(false, g.threshold, g.cooldown)
+        g.downstreamFailures.Add(1)
+        return attemptResult{status: 502, body: []byte("upstream request unavailable"), retryable: true}
+    }
+    req.Header.Set("Content-Type", contentType)
+    resp, err := g.client.Do(req)
+    if err != nil {
+        backend.finish(false, g.threshold, g.cooldown)
+        g.downstreamFailures.Add(1)
+        return attemptResult{status: 502, body: []byte("upstream request failed"), retryable: true}
+    }
+    defer resp.Body.Close()
+    data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+    if readErr != nil || len(data) > maxBodyBytes {
+        backend.finish(false, g.threshold, g.cooldown)
+        g.downstreamFailures.Add(1)
+        return attemptResult{status: 502, body: []byte("invalid or oversized upstream response"), retryable: false}
+    }
+    unhealthy := resp.StatusCode == 429 || resp.StatusCode >= 500
+    if unhealthy { g.downstreamFailures.Add(1) }
+    backend.finish(!unhealthy, g.threshold, g.cooldown)
+    // Never retry rate-limit responses; these usually indicate quota/backpressure.
+    retryable := resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504
+    return attemptResult{status: resp.StatusCode, body: data,
+        contentType: resp.Header.Get("Content-Type"), retryable: retryable}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -111,10 +181,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     if r.URL.Path == "/metrics" {
         w.Header().Set("Content-Type", "application/json")
         _ = json.NewEncoder(w).Encode(map[string]uint64{
-            "accepted": g.accepted.Load(),
-            "over_capacity": g.rejected.Load(),
+            "accepted": g.accepted.Load(), "over_capacity": g.rejected.Load(),
             "downstream_failures": g.downstreamFailures.Load(),
             "circuit_open_rejections": g.circuitOpenRejections.Load(),
+            "retry_attempts": g.retryAttempts.Load(),
+            "retry_budget_denied": g.retryBudgetDenied.Load(),
         })
         return
     }
@@ -128,44 +199,44 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     }
     select {
     case g.permits <- struct{}{}:
-        defer func() { <-g.permits }()
+        defer func(){ <-g.permits }()
     default:
         g.rejected.Add(1)
         http.Error(w, "gateway concurrency exhausted", http.StatusTooManyRequests)
         return
     }
-    backend := g.selectBackend()
+    body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+    if err != nil || len(body) > maxBodyBytes {
+        http.Error(w, "invalid or oversized request body", http.StatusRequestEntityTooLarge)
+        return
+    }
+    g.accepted.Add(1)
+    ctx, cancel := context.WithTimeout(r.Context(), g.timeout)
+    defer cancel()
+    backend := g.selectBackendExcept(nil)
     if backend == nil {
         g.circuitOpenRejections.Add(1)
         http.Error(w, "all backend circuits open", http.StatusServiceUnavailable)
         return
     }
-    g.accepted.Add(1)
-    target := *backend.url
-    target.Path = "/infer"
-    target.RawQuery = ""
-    req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), r.Body)
-    if err != nil {
-        g.downstreamFailures.Add(1)
-        backend.finish(false, g.threshold, g.cooldown)
-        http.Error(w, "upstream request unavailable", http.StatusBadGateway)
-        return
+    key := r.Header.Get("Idempotency-Key")
+    canRetry := g.maxRetries > 0 && len(key) > 0 && len(key) <= 128 && len(g.backends) > 1
+    result := g.attempt(ctx, backend, body, r.Header.Get("Content-Type"))
+    for i := 0; canRetry && i < g.maxRetries && result.retryable && ctx.Err() == nil; i++ {
+        next := g.selectBackendExcept(backend)
+        if next == nil { break }
+        if !g.acquireRetryToken() {
+            // A half-open candidate was reserved; release it without crediting
+            // a successful probe or sending an extra request.
+            next.mu.Lock()
+            next.probing = false
+            next.mu.Unlock()
+            break
+        }
+        backend = next
+        result = g.attempt(ctx, backend, body, r.Header.Get("Content-Type"))
     }
-    req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-    response, err := g.client.Do(req)
-    if err != nil {
-        g.downstreamFailures.Add(1)
-        backend.finish(false, g.threshold, g.cooldown)
-        http.Error(w, "upstream request failed", http.StatusBadGateway)
-        return
-    }
-    defer response.Body.Close()
-    unhealthy := response.StatusCode == 429 || response.StatusCode >= 500
-    if unhealthy { g.downstreamFailures.Add(1) }
-    backend.finish(!unhealthy, g.threshold, g.cooldown)
-    if ct := response.Header.Get("Content-Type"); ct != "" {
-        w.Header().Set("Content-Type", ct)
-    }
-    w.WriteHeader(response.StatusCode)
-    _, _ = io.Copy(w, io.LimitReader(response.Body, 1<<20))
+    if result.contentType != "" { w.Header().Set("Content-Type", result.contentType) }
+    w.WriteHeader(result.status)
+    _, _ = w.Write(result.body)
 }
