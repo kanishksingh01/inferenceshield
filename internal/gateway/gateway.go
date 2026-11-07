@@ -142,7 +142,7 @@ type attemptResult struct {
     retryable bool
 }
 
-func (g *Gateway) attempt(ctx context.Context, backend *backendState, body []byte, contentType string) attemptResult {
+func (g *Gateway) attempt(ctx context.Context, backend *backendState, body []byte, contentType string, idempotencyKey string) attemptResult {
     target := *backend.url
     target.Path = "/infer"
     target.RawQuery = ""
@@ -153,6 +153,7 @@ func (g *Gateway) attempt(ctx context.Context, backend *backendState, body []byt
         return attemptResult{status: 502, body: []byte("upstream request unavailable"), retryable: true}
     }
     req.Header.Set("Content-Type", contentType)
+    if idempotencyKey != "" { req.Header.Set("Idempotency-Key", idempotencyKey) }
     resp, err := g.client.Do(req)
     if err != nil {
         backend.finish(false, g.threshold, g.cooldown)
@@ -250,7 +251,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     }
     key := r.Header.Get("Idempotency-Key")
     canRetry := g.maxRetries > 0 && len(key) > 0 && len(key) <= 128 && len(g.backends) > 1
-    result := g.attempt(ctx, backend, body, r.Header.Get("Content-Type"))
+    result := g.attempt(ctx, backend, body, r.Header.Get("Content-Type"), key)
     for i := 0; canRetry && i < g.maxRetries && result.retryable && ctx.Err() == nil; i++ {
         next := g.selectBackendExcept(backend)
         if next == nil { break }

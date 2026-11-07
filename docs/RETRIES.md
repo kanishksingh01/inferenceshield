@@ -16,3 +16,5 @@ Request and response bodies are each limited to 1 MiB; this simple reference gat
 Metrics: `GET /metrics` exposes accepted requests, capacity rejects, downstream failures, circuit-open rejects, actual retry attempts and retry-budget refusals.
 
 Benchmarking against a naive retry baseline and structured OpenTelemetry instrumentation remain outstanding.
+
+The gateway forwards the supplied Idempotency-Key unchanged to each attempted backend. This enables—but does not enforce—deduplication if the downstream service implements idempotency. Tests verify the same key reaches the first and retry attempts.

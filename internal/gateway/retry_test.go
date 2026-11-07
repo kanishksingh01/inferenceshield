@@ -5,6 +5,7 @@ import (
     "net/http/httptest"
     "strings"
     "sync/atomic"
+    "sync"
     "testing"
     "time"
 )
@@ -96,4 +97,34 @@ func TestBodyBound(t *testing.T) {
 func TestInvalidRetryPolicy(t *testing.T) {
     if _, err := NewWithPolicies([]string{"http://localhost"}, 1, time.Second, 3,
                                  time.Second, 4, 5); err == nil { t.Fatal("expected rejection") }
+}
+
+func TestRetryPropagatesSameIdempotencyKey(t *testing.T) {
+    var keys []string
+    var mu sync.Mutex
+    bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        mu.Lock()
+        keys = append(keys, r.Header.Get("Idempotency-Key"))
+        mu.Unlock()
+        w.WriteHeader(503)
+    }))
+    defer bad.Close()
+    healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        mu.Lock()
+        keys = append(keys, r.Header.Get("Idempotency-Key"))
+        mu.Unlock()
+        w.WriteHeader(200)
+    }))
+    defer healthy.Close()
+    g, _ := NewWithPolicies([]string{bad.URL, healthy.URL}, 2, time.Second, 3, time.Second, 1, 1)
+    r := httptest.NewRequest("POST", "/infer", strings.NewReader("{}"))
+    r.Header.Set("Idempotency-Key", "stable-request-id")
+    w := httptest.NewRecorder()
+    g.ServeHTTP(w, r)
+    if w.Code != 200 { t.Fatalf("expected alternate success, got %d", w.Code) }
+    mu.Lock()
+    defer mu.Unlock()
+    if len(keys) != 2 || keys[0] != "stable-request-id" || keys[1] != "stable-request-id" {
+        t.Fatalf("idempotency key not forwarded consistently: %v", keys)
+    }
 }
