@@ -14,6 +14,9 @@ I built an independent Go HTTP gateway and synthetic model backends. It enforces
 
 **Proof:** [Container-based circuit/SSE and overload benchmark](https://github.com/kanishksingh01/inferenceshield/actions/runs/42424682130) · [Latest authentication tests](https://github.com/kanishksingh01/inferenceshield/actions/runs/42425000117).
 
+## Kubernetes-hosted gateway integration
+The [successful disposable Kind integration](https://github.com/kanishksingh01/inferenceshield/actions/runs/42426432596) deployed the real Go gateway and two mock inference servers as Pods with ClusterIP Services. Of 18 synthetic requests, 15 returned HTTP 200 and three returned failing-backend HTTP 503 responses before that backend was isolated. The gateway forwarded three synthetic SSE events, without a single retry. All images and traffic were local to temporary Kind; no billable model service or private prompt was used.
+
 ## Engineering decisions
 - Rejected or unhealthy backends do not cause unbounded retry storms.
 - Never automatically retry HTTP 429 or SSE streams.

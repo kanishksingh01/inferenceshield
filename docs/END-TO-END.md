@@ -6,7 +6,7 @@
 
 When a model-serving API returns errors or slows down, naive clients keep sending requests and may amplify an outage. A client-facing gateway should cap its own concurrency, enforce deadlines, and avoid repeatedly selecting a backend that is demonstrably unhealthy.
 
-**What we built:** A small Go HTTP gateway with synthetic inference servers and failure-isolating circuit breakers. It deliberately has **no automatic retries yet**.
+**What we built:** A small Go HTTP gateway with synthetic inference servers and failure-isolating circuit breakers. It implements optional, strictly bounded retries; they are disabled by default and require a forwarded Idempotency-Key.
 
 ## 2. End-to-end request flow
 
@@ -65,7 +65,13 @@ curl -i -X POST http://127.0.0.1:8080/infer \
 curl http://127.0.0.1:8080/metrics
 ```
 
-The Compose gateway only publishes the loopback port. It does **not** connect to Claude or other real model APIs. It has no authentication or private-prompt handling, so keep tests synthetic and local.
+The Compose gateway only publishes the loopback port. It does **not** connect to Claude or other real model APIs. It supports optional Bearer authentication, but no TLS, managed identity or private-prompt protection; keep tests synthetic and local.
+
+## Real Kubernetes and resilience benchmarks
+
+The [Kind gateway integration](https://github.com/kanishksingh01/inferenceshield/actions/runs/42426432596) deploys the Go gateway and two synthetic inference servers as actual Kubernetes Pods, accessed through a ClusterIP Service. The gateway returns 15 healthy responses and three expected 503s from 18 requests, isolates the unhealthy backend and forwards three synthetic SSE events, with no automatic retries.
+
+The [Compose overload experiment](https://github.com/kanishksingh01/inferenceshield/actions/runs/42424682130) sends 40 concurrent requests to a two-second backend under a 16-in-flight cap and 1.5-second deadline: 24 requests are rejected (429) and 16 time out (502), p95 ~1,503 ms, zero retries. Both are synthetic test environments—not production model-serving performance.
 
 ## 5. How to interpret the tests
 
@@ -86,10 +92,10 @@ The tests verify healthy forwarding, transport failure handling, bounded admissi
 
 ## 7. Security gaps and remaining work
 
-- No authentication, TLS identity policy, maximum inbound request size, tenant isolation, sensitive-prompt redaction, or billing controls.
-- No streaming semantics, retry budgets, jitter, request queue policy, or distributed circuit-state coordination.
-- No load-test comparison yet demonstrating reliability improvement against naive requests.
+- Optional single Bearer authentication and a 1 MiB body cap are implemented, but TLS identity, token rotation, tenant isolation, sensitive-prompt redaction and billing controls are not.
+- Basic SSE streaming and opt-in retry budgets are implemented; provider-specific stream contracts, retry jitter, queue policy and distributed circuit-state coordination are not.
+- One synthetic overloaded-backend latency/admission test is complete; no statistically robust load comparison against naive client retries exists yet.
 
-The next phase should add **bounded retry budgets** and deterministic failure benchmarks without adding unsafe retry amplification. AI-powered incident explanation and model-aware routing remain deferred.
+The next phase should expand bounded-retry benchmark coverage, secure streaming semantics and distributed failure-isolation tests. AI-powered incident explanation and model-aware routing remain deferred.
 
 See [P0 issue](https://github.com/kanishksingh01/inferenceshield/issues/1) and [blueprint](https://github.com/kanishksingh01/inferenceshield/issues/6).
