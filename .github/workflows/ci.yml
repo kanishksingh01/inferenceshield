@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  go-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Go tests with race detector
+        run: go test -race ./...
+      - name: Build gateway and mock backend
+        run: |
+          go build ./cmd/inferenceshield
+          go build ./cmd/mock-backend
+      - name: Build containers
+        run: docker compose build

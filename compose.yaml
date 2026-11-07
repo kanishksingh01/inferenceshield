@@ -1,0 +1,24 @@
+services:
+  healthy:
+    build:
+      context: .
+      target: mock
+    environment:
+      MOCK_MODE: healthy
+  failing:
+    build:
+      context: .
+      target: mock
+    environment:
+      MOCK_MODE: error
+  gateway:
+    build:
+      context: .
+      target: gateway
+    environment:
+      UPSTREAM_URLS: http://healthy:8081,http://failing:8081
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - healthy
+      - failing
