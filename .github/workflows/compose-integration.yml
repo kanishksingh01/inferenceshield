@@ -20,6 +20,7 @@ jobs:
         run: |
           python3 scripts/compose_smoke.py
           python3 scripts/stress_smoke.py
+          python3 scripts/rate_limit_smoke.py
       - name: Save report
         if: always()
         uses: actions/upload-artifact@v4
@@ -28,6 +29,7 @@ jobs:
           path: |
             compose-report.json
             stress-report.json
+            rate-limit-report.json
           if-no-files-found: ignore
           retention-days: 14
       - name: Diagnose and clean up

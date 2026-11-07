@@ -41,3 +41,18 @@ services:
       - "127.0.0.1:8082:8080"
     depends_on:
       - slow
+
+  rate-gateway:
+    profiles: ["stress"]
+    build:
+      context: .
+      target: gateway
+    environment:
+      UPSTREAM_URLS: http://healthy:8081
+      RATE_LIMIT_RPS: "1"
+      RATE_LIMIT_BURST: "2"
+      AUTH_TOKEN: "synthetic-test-token"
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      - healthy
