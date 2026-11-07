@@ -264,7 +264,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             break
         }
         backend = next
-        result = g.attempt(ctx, backend, body, r.Header.Get("Content-Type"))
+        result = g.attempt(ctx, backend, body, r.Header.Get("Content-Type"), key)
     }
     if result.contentType != "" { w.Header().Set("Content-Type", result.contentType) }
     w.WriteHeader(result.status)
