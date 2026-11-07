@@ -193,7 +193,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             {"inferenceshield_retry_budget_denied_total", g.retryBudgetDenied.Load()},
         }
         for _, metric := range values {
-            _, _ = fmt.Fprintf(w, "# TYPE %s counter\\n%s %d\\n", metric.name, metric.name, metric.val)
+            _, _ = fmt.Fprintf(w, "# TYPE %s counter\n%s %d\n", metric.name, metric.name, metric.val)
         }
         return
     }
