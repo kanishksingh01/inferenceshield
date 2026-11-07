@@ -3,6 +3,7 @@ package gateway
 import (
     "net/http"
     "net/http/httptest"
+    "sync/atomic"
     "strings"
     "testing"
     "time"
@@ -63,4 +64,47 @@ func TestRejectBadConfig(t *testing.T) {
             t.Errorf("expected invalid target: %s", target)
         }
     }
+}
+
+func TestCircuitBreakerOpensAndRejectsWithoutRetryStorm(t *testing.T) {
+    var calls atomic.Int64
+    backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        calls.Add(1)
+        w.WriteHeader(503)
+    }))
+    defer backend.Close()
+    gate, err := NewWithCircuitPolicy([]string{backend.URL}, 3, time.Second, 2, time.Second)
+    if err != nil { t.Fatal(err) }
+    for i := 0; i < 3; i++ {
+        rec := httptest.NewRecorder()
+        gate.ServeHTTP(rec, httptest.NewRequest("POST", "/infer", nil))
+        if rec.Code != 503 { t.Fatalf("unexpected HTTP %d", rec.Code) }
+    }
+    if calls.Load() != 2 { t.Fatalf("expected 2 backend calls before open, got %d", calls.Load()) }
+    if gate.circuitOpenRejections.Load() != 1 { t.Fatal("circuit did not reject open request") }
+}
+
+func TestHalfOpenRecoveryAfterCooldown(t *testing.T) {
+    var healthy atomic.Bool
+    var calls atomic.Int64
+    backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        calls.Add(1)
+        if !healthy.Load() { w.WriteHeader(503); return }
+        w.WriteHeader(200)
+    }))
+    defer backend.Close()
+    gate, err := NewWithCircuitPolicy([]string{backend.URL}, 2, time.Second, 1, 30*time.Millisecond)
+    if err != nil { t.Fatal(err) }
+    one := func() int {
+        rec := httptest.NewRecorder()
+        gate.ServeHTTP(rec, httptest.NewRequest("POST", "/infer", nil))
+        return rec.Code
+    }
+    if one() != 503 { t.Fatal("first failure not propagated") }
+    if one() != 503 { t.Fatal("open circuit must return 503") }
+    if calls.Load() != 1 { t.Fatal("open circuit reached backend") }
+    healthy.Store(true)
+    time.Sleep(45*time.Millisecond)
+    if one() != 200 { t.Fatal("half-open healthy probe did not close circuit") }
+    if one() != 200 { t.Fatal("closed circuit did not serve request") }
 }
