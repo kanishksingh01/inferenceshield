@@ -55,7 +55,7 @@ def main():
         chunks = stream.read()
         if stream.status != 200 or "text/event-stream" not in content_type:
             raise AssertionError("healthy backend did not produce SSE")
-        if chunks.count(b"data:") != 3 or chunks.count(b"\\n\\n") != 3:
+        if chunks.count(b"data:") != 3 or chunks.count(b"\n\n") != 3:
             raise AssertionError(f"invalid SSE events: {chunks!r}")
     report = {
         "scenario": "one healthy and one HTTP-503 mock inference backend",
