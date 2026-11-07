@@ -68,6 +68,8 @@ type Gateway struct {
     circuitOpenRejections atomic.Uint64
     retryAttempts atomic.Uint64
     retryBudgetDenied atomic.Uint64
+    streamsStarted atomic.Uint64
+    streamFailures atomic.Uint64
 }
 
 func New(targets []string, maxInFlight int, timeout time.Duration) (*Gateway, error) {
@@ -191,6 +193,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             {"inferenceshield_circuit_rejections_total", g.circuitOpenRejections.Load()},
             {"inferenceshield_retry_attempts_total", g.retryAttempts.Load()},
             {"inferenceshield_retry_budget_denied_total", g.retryBudgetDenied.Load()},
+            {"inferenceshield_stream_requests_total", g.streamsStarted.Load()},
+            {"inferenceshield_stream_failures_total", g.streamFailures.Load()},
         }
         for _, metric := range values {
             _, _ = fmt.Fprintf(w, "# TYPE %s counter\n%s %d\n", metric.name, metric.name, metric.val)
@@ -205,6 +209,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             "circuit_open_rejections": g.circuitOpenRejections.Load(),
             "retry_attempts": g.retryAttempts.Load(),
             "retry_budget_denied": g.retryBudgetDenied.Load(),
+            "stream_requests": g.streamsStarted.Load(),
+            "stream_failures": g.streamFailures.Load(),
         })
         return
     }
@@ -230,6 +236,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
         return
     }
     g.accepted.Add(1)
+    if strings.EqualFold(strings.TrimSpace(r.Header.Get("Accept")), "text/event-stream") {
+        g.serveEventStream(w, r, body)
+        return
+    }
     ctx, cancel := context.WithTimeout(r.Context(), g.timeout)
     defer cancel()
     backend := g.selectBackendExcept(nil)

@@ -2,6 +2,7 @@ package main
 
 import (
     "encoding/json"
+    "fmt"
     "log"
     "net/http"
     "os"
@@ -14,6 +15,18 @@ func main() {
     http.HandleFunc("/infer", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
             http.Error(w, "POST required", 405)
+            return
+        }
+        if mode == "healthy" && r.Header.Get("Accept") == "text/event-stream" {
+            w.Header().Set("Content-Type", "text/event-stream")
+            w.Header().Set("Cache-Control", "no-cache")
+            flusher, ok := w.(http.Flusher)
+            if !ok { http.Error(w, "streaming unavailable", 500); return }
+            for i := 0; i < 3; i++ {
+                _, _ = fmt.Fprintf(w, "data: {\"token\":%d}\\n\\n", i)
+                flusher.Flush()
+                time.Sleep(20 * time.Millisecond)
+            }
             return
         }
         switch mode {
