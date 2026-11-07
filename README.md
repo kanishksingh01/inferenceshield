@@ -1,13 +1,11 @@
 # InferenceShield
 
-**Resilience gateway for model inference APIs** · Independent portfolio project · Private during development
+**Inference API resilience gateway featuring admission control, circuit breakers, bounded retries, and experimental SSE.** Independent cloud portfolio project; not affiliated with Anthropic. Private during development.
 
-**Start here:** [Read the complete end-to-end walkthrough](docs/END-TO-END.md).
+**Start:** [Full end-to-end guide](docs/END-TO-END.md) · [Release criteria](docs/RELEASE-STATUS.md).
 
-The walkthrough explains request routing, circuit-breaker states, synthetic backend failure demonstrations, relevant metrics and tests, remaining safety gaps, and next milestones.
+The Go gateway routes synthetic model requests to HTTP mock backends with concurrency caps, deadlines, per-backend circuit breakers, and opt-in retries controlled by a global budget. A local Docker Compose integration verifies a failing backend can be isolated without repeated amplification. Experimental SSE streaming is being validated.
 
-**Verified:** Go tests/race detector and container builds for HTTP forwarding, concurrency limits, deadlines, and per-backend circuit breakers. **Not yet:** retries, streaming, real provider integration, or production security.
+**Current status:** Functional synthetic-inference lab; no production credentials, authentication or billing support. AI incident-investigation features deferred.
 
-[Go and container CI](.github/workflows/ci.yml) · [Architecture](docs/ARCHITECTURE.md) · [Circuit-breaker details](docs/CIRCUIT-BREAKER.md)
-
-Only synthetic model responses are used; no production API keys or private prompts.
+[Go CI](.github/workflows/ci.yml) · [Compose tests](.github/workflows/compose-integration.yml) · [Circuit breaker](docs/CIRCUIT-BREAKER.md) · [Retries](docs/RETRIES.md)
