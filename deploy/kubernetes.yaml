@@ -1,0 +1,152 @@
+# Synthetic inference gateway demonstration. Disposable Kind ONLY.
+# Unauthenticated lab gateway; no Ingress, LoadBalancer or public NodePort.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inferenceshield-lab
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthy
+  namespace: inferenceshield-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mock-healthy}
+  template:
+    metadata:
+      labels: {app: mock-healthy}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mock
+          image: inferenceshield-mock:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: MOCK_MODE, value: healthy}
+          ports:
+            - {name: http, containerPort: 8081}
+          readinessProbe:
+            tcpSocket: {port: http}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healthy
+  namespace: inferenceshield-lab
+spec:
+  type: ClusterIP
+  selector: {app: mock-healthy}
+  ports:
+    - {name: http, port: 8081, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: failing
+  namespace: inferenceshield-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: mock-failing}
+  template:
+    metadata:
+      labels: {app: mock-failing}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mock
+          image: inferenceshield-mock:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: MOCK_MODE, value: error}
+          ports:
+            - {name: http, containerPort: 8081}
+          readinessProbe:
+            tcpSocket: {port: http}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: failing
+  namespace: inferenceshield-lab
+spec:
+  type: ClusterIP
+  selector: {app: mock-failing}
+  ports:
+    - {name: http, port: 8081, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: inferenceshield-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: inferenceshield}
+  template:
+    metadata:
+      labels: {app: inferenceshield}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: gateway
+          image: inferenceshield-gateway:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: UPSTREAM_URLS
+              value: http://healthy.inferenceshield-lab.svc.cluster.local:8081,http://failing.inferenceshield-lab.svc.cluster.local:8081
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 50m, memory: 48Mi}
+            limits: {cpu: 300m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: inferenceshield-lab
+spec:
+  type: ClusterIP
+  selector: {app: inferenceshield}
+  ports:
+    - {name: http, port: 8080, targetPort: http}

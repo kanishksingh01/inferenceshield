@@ -1,0 +1,66 @@
+name: Kind Inference Gateway Integration
+on:
+  push:
+    branches: [main]
+    paths:
+      - cmd/**
+      - internal/**
+      - Dockerfile
+      - deploy/**
+      - scripts/kind_smoke.py
+      - .github/workflows/kind-integration.yml
+  pull_request:
+    paths:
+      - cmd/**
+      - internal/**
+      - Dockerfile
+      - deploy/**
+      - scripts/kind_smoke.py
+      - .github/workflows/kind-integration.yml
+permissions:
+  contents: read
+concurrency:
+  group: inferenceshield-kind-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1.13.0
+        with:
+          cluster_name: inferenceshield
+          config: deploy/kind-config.yaml
+          wait: 120s
+      - name: Build and load Go gateway and mock backends
+        run: |
+          docker build -f Dockerfile --target gateway -t inferenceshield-gateway:dev .
+          docker build -f Dockerfile --target mock -t inferenceshield-mock:dev .
+          kind load docker-image inferenceshield-gateway:dev --name inferenceshield
+          kind load docker-image inferenceshield-mock:dev --name inferenceshield
+      - name: Deploy synthetic inference system
+        run: |
+          kubectl --context kind-inferenceshield apply -f deploy/kubernetes.yaml
+          for component in healthy failing gateway; do
+            kubectl --context kind-inferenceshield -n inferenceshield-lab rollout status deployment/$component --timeout=180s
+          done
+      - name: Verify live gateway circuit and SSE over Kubernetes Service
+        run: |
+          kubectl --context kind-inferenceshield -n inferenceshield-lab port-forward svc/gateway 18080:8080 >/tmp/gateway-forward.log 2>&1 &
+          FORWARD_PID=$!
+          trap 'kill "$FORWARD_PID" 2>/dev/null || true' EXIT
+          python3 scripts/kind_smoke.py
+      - name: Save gateway Kubernetes report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inferenceshield-kind-report
+          path: kubernetes-gateway-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl --context kind-inferenceshield -n inferenceshield-lab get deploy,pod,svc,endpointslices -o wide || true
+          kubectl --context kind-inferenceshield -n inferenceshield-lab logs deploy/gateway --tail=100 || true
