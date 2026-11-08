@@ -25,7 +25,7 @@ func (g *Gateway) serveEventStream(w http.ResponseWriter, r *http.Request, body 
         http.Error(w, "all backend circuits open", http.StatusServiceUnavailable)
         return
     }
-    ctx, cancel := context.WithTimeout(r.Context(), g.timeout)
+    ctx, cancel := context.WithTimeout(r.Context(), g.streamTimeout)
     defer cancel()
     target := *backend.url
     target.Path = "/infer"
@@ -41,7 +41,7 @@ func (g *Gateway) serveEventStream(w http.ResponseWriter, r *http.Request, body 
     }
     req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
     req.Header.Set("Accept", "text/event-stream")
-    resp, err := g.client.Do(req)
+    resp, err := g.streamClient.Do(req)
     if err != nil {
         if r.Context().Err() != nil {
             backend.releaseProbe()

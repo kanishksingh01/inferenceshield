@@ -52,3 +52,33 @@ func TestStreamingRejectsNonSSEResponse(t *testing.T) {
         t.Fatalf("expected 502 for wrong content-type, got %d", rec.Code)
     }
 }
+
+func TestSSEStreamOutlivesUnaryDeadline(t *testing.T) {
+    backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "text/event-stream")
+        _, _ = w.Write([]byte("data: first\n\n"))
+        w.(http.Flusher).Flush()
+        time.Sleep(125*time.Millisecond)
+        _, _ = w.Write([]byte("data: second\n\n"))
+        w.(http.Flusher).Flush()
+    }))
+    defer backend.Close()
+    g, err := New([]string{backend.URL}, 1, 40*time.Millisecond)
+    if err != nil { t.Fatal(err) }
+    if err := g.SetStreamTimeout(time.Second); err != nil { t.Fatal(err) }
+    r := httptest.NewRequest("POST", "/infer", strings.NewReader("{}"))
+    r.Header.Set("Accept", "text/event-stream")
+    rec := httptest.NewRecorder()
+    g.ServeHTTP(rec, r)
+    if rec.Code != 200 { t.Fatalf("unexpected HTTP %d", rec.Code) }
+    if strings.Count(rec.Body.String(), "data:") != 2 {
+        t.Fatalf("SSE terminated at unary request deadline: %q", rec.Body.String())
+    }
+    if g.streamFailures.Load() != 0 { t.Fatal("healthy stream was counted as failure") }
+}
+
+func TestStreamTimeoutPolicyValidation(t *testing.T) {
+    g, _ := New([]string{"http://127.0.0.1:8081"}, 1, time.Second)
+    if err := g.SetStreamTimeout(0); err == nil { t.Fatal("zero timeout allowed") }
+    if err := g.SetStreamTimeout(11*time.Minute); err == nil { t.Fatal("unbounded timeout allowed") }
+}

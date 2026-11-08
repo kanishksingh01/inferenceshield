@@ -63,6 +63,8 @@ func (b *backendState) releaseProbe() {
 type Gateway struct {
     backends []*backendState
     client *http.Client
+    streamClient *http.Client
+    streamTimeout time.Duration
     permits chan struct{}
     threshold int
     cooldown time.Duration
@@ -107,7 +109,14 @@ func NewWithPolicies(targets []string, maxInFlight int, timeout time.Duration,
         client: &http.Client{Timeout: timeout,
             CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
                 return http.ErrUseLastResponse
-            }}}
+            }},
+        streamClient: &http.Client{
+            // Streaming has a separately bounded context lifetime; a client-wide
+            // short timeout would terminate even a healthy SSE response body.
+            CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+                return http.ErrUseLastResponse
+            }},
+        streamTimeout: 30*time.Second}
     for _, raw := range targets {
         u, err := url.Parse(strings.TrimSpace(raw))
         if err != nil || u == nil || u.Host == "" ||
