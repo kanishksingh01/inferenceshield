@@ -10,6 +10,9 @@ The Go gateway routes synthetic model requests to HTTP mock backends with concur
 
 **Kubernetes demonstration:** [Go gateway plus two mock model backends in real Kind, 15/18 healthy responses, three 503s, three SSE events, zero retries](https://github.com/kanishksingh01/inferenceshield/actions/runs/42426432596).
 
+
+**Additional safeguards:** Optional token-bucket rate admission and bearer auth passed [live Compose CI](https://github.com/kanishksingh01/inferenceshield/actions/runs/42426689606); separate bounded SSE lifetime and caller-cancellation regression tests passed [Go CI](https://github.com/kanishksingh01/inferenceshield/actions/runs/42427835414) and [Kind](https://github.com/kanishksingh01/inferenceshield/actions/runs/42427835525).
+
 **Current status:** Functional synthetic-inference lab; optional lab bearer-token authentication but no production TLS/tenant isolation, model-provider credentials or billing support. AI incident-investigation features deferred.
 
 [Go CI](.github/workflows/ci.yml) · [Compose tests](.github/workflows/compose-integration.yml) · [Circuit breaker](docs/CIRCUIT-BREAKER.md) · [Retries](docs/RETRIES.md)
